@@ -1,0 +1,91 @@
+# window-layout
+
+`window-layout` is a Perl command-line tool designed to save, list, and restore
+the geometry, position, and command of your current X11 Linux desktop windows.
+It is built on top of `wmctrl` and `xdotool` to reliably capture and manage
+window states across sessions.
+
+## Dependencies
+
+Before using `window-layout`, ensure you have the following system dependencies installed:
+
+- `perl`
+- `wmctrl` (for interacting with the window manager)
+- `xdotool` (for retrieving screen information)
+
+## Usage
+
+```bash
+window-layout [options] <list|save|restore>
+```
+
+### Commands
+
+- **`list`**: Prints out the current windows to standard output in JSON format.
+- **`save`**: Saves the current window layout to the configuration file.
+- **`restore`**: Reads the configuration file and restores the saved window layout. It will attempt to match existing windows or spawn missing ones as needed.
+
+### Options
+
+| Option            | Description                                                                 |
+| ----------------- | --------------------------------------------------------------------------- |
+| `--append`        | Append to the layout when saving instead of overwriting.                    |
+| `-n`, `--dry-run` | Simulate the restore process without actually moving windows.               |
+| `--screen ID`     | Filter operations by screen ID. (for multiple monitors)                     |
+| `--desktop ID`    | Filter operations by desktop ID.                                            |
+| `--filter CMD`    | Filter operations by command name (e.g., `konsole`).                        |
+| `--config FILE`   | Specify an alternative JSON config file. (Default: `~/.window-layout.json`) |
+| `-v`, `--verbose` | Print debug output during execution.                                        |
+| `-h`, `--help`    | Print the help message.                                                     |
+
+## Configuration Format
+
+The tool uses a JSON array configuration file located by default at `~/.window-layout.json`.
+
+Example configuration:
+
+```json
+[
+  {
+    "screen":    0,
+    "desktop":   0,
+    "command":  "konsole",
+    "x":         2,
+    "y":         28,
+    "width":     1232,
+    "height":    425
+  },
+  {
+    "screen":    0,
+    "desktop":   1,
+    "command":  "firefox",
+    "x":         0,
+    "y":         0,
+    "width":     1920,
+    "height":    1043,
+    "autostart": 0
+  }
+]
+```
+
+### JSON Attributes
+
+| Attribute   | Description |
+| ----------- | ----------- |
+| `command`   | The command or executable name associated with the window. |
+| `desktop`   | The desktop number the window is on (0-indexed). `-1` indicates the window is on all desktops (sticky). |
+| `screen`    | The monitor/screen ID the window is located on. |
+| `width`     | The width of the window in pixels. |
+| `height`    | The height of the window in pixels. |
+| `x`         | The horizontal X coordinate of the window position. |
+| `y`         | The vertical Y coordinate of the window position. |
+| `autostart` | (Optional) Boolean indicating whether to start the command if the window is missing. Defaults to `true`. Set to `false` to skip starting the process automatically. |
+
+## How It Works
+
+When restoring windows, `window-layout` matches saved commands against existing
+windows. If a window doesn't exist, it intelligently forks the new process and
+actively traces the process tree to identify the newly created window
+(even if the application forks to the background, like `konsole` or `gnome-terminal`),
+correctly placing it according to your saved geometry.
+

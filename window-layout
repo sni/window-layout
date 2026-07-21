@@ -1,0 +1,398 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Getopt::Long;
+use JSON::PP;
+use Pod::Usage;
+use POSIX ":sys_wait_h";
+use Time::HiRes qw(sleep);
+
+=head1 NAME
+
+window-layout - Save, list, and restore Linux desktop windows
+
+=head1 SYNOPSIS
+
+window-layout [options] <list|save|restore>
+
+ Options:
+   --append           Append to the layout when saving instead of overwriting
+   --dry-run          Simulate the restore process without actually moving windows
+   --screen ID        Filter by screen ID (for multiple monitors)
+   --desktop ID       Filter by desktop ID
+   --filter CMD       Filter by command name
+   --config FILE      Specify an alternative JSON config file (default: ~/.window-layout.json)
+   -v, --verbose      Print debug output
+   -h, --help         Print this help message
+
+=head1 DESCRIPTION
+
+This tool allows you to save the geometry, position, and command of your current X11 windows,
+and restore them later. It uses C<wmctrl> and C<xdotool> under the hood.
+
+=cut
+
+my $append  = 0;
+my $dry_run = 0;
+my $config  = $ENV{HOME} . "/.window-layout.json";
+my $verbose = 0;
+my $help    = 0;
+my $filter_screen;
+my $filter_desktop;
+my $filter_command;
+
+Getopt::Long::Configure('no_ignore_case');
+Getopt::Long::Configure('bundling');
+Getopt::Long::GetOptions (
+    "append"    => \$append,
+    "dry-run|n" => \$dry_run,
+    "screen=i"  => \$filter_screen,
+    "desktop=i" => \$filter_desktop,
+    "filter=s"  => \$filter_command,
+    "config=s"  => \$config,
+    "verbose|v" => \$verbose,
+    "help|h"    => \$help,
+) or pod2usage("Error in command line arguments\n");
+
+pod2usage(1) if $help;
+
+my $command = shift @ARGV;
+if (!$command || $command !~ /^(list|save|restore)$/) {
+    pod2usage("Usage: $0 [options] <list|save|restore>\n");
+}
+
+################################################################################
+sub get_command_for_pid {
+    my ($pid) = @_;
+    return "unknown" unless $pid && $pid > 0;
+    if (open my $fh, '<', "/proc/$pid/comm") {
+        my $comm = <$fh>;
+        close $fh;
+        if (defined $comm) {
+            chomp $comm;
+            return $comm;
+        }
+    }
+    return "unknown";
+}
+
+################################################################################
+sub get_descendants {
+    my ($pid) = @_;
+    my @descendants;
+    my @lines = `ps --ppid $pid -o pid= 2>/dev/null`;
+    for my $line (@lines) {
+        chomp $line;
+        $line =~ s/^\s+|\s+$//g;
+        if ($line =~ /^\d+$/) {
+            push @descendants, $line;
+            push @descendants, get_descendants($line);
+        }
+    }
+    return @descendants;
+}
+
+################################################################################
+sub get_current_windows {
+    my @windows;
+    print "Listing existing windows ('wmctrl -plG')\n" if $verbose;
+    my @lines = `wmctrl -plxG`;
+    for my $line (@lines) {
+        chomp $line;
+        # format: ID Desktop PID X Y W H Class Hostname Title
+        # 0x02a00003  0 20384  0    0    1920 1080 konsole.konsole  myhost Title
+        if ($line =~ /^(\S+)\s+(-?\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/) {
+            my ($id, $desktop, $pid, $x, $y, $w, $h, $class, $host, $title) = ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+
+            my $cmd = get_command_for_pid($pid);
+            if ($cmd eq "unknown" && $class =~ /^([^\.]+)/) {
+                $cmd = lc($1);
+            }
+            print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
+
+            # Use xdotool to get screen if possible, fallback to 0
+            my $screen = 0;
+            my $geom_out = `xdotool getwindowgeometry $id 2>/dev/null`;
+            if (defined $geom_out && $geom_out =~ /screen:\s*(\d+)/) {
+                $screen = $1;
+            }
+
+            push @windows, {
+                id      => $id,
+                desktop => int($desktop),
+                pid     => int($pid),
+                x       => int($x),
+                y       => int($y),
+                width   => int($w),
+                height  => int($h),
+                screen  => int($screen),
+                command => $cmd,
+                title   => $title,
+            };
+        }
+    }
+    return @windows;
+}
+
+################################################################################
+sub filter_windows {
+    my (@windows) = @_;
+    return grep {
+        (!defined $filter_screen  || $_->{screen}  == $filter_screen) &&
+        (!defined $filter_desktop || $_->{desktop} == $filter_desktop) &&
+        (!defined $filter_command || $_->{command} eq $filter_command)
+    } @windows;
+}
+
+################################################################################
+sub run_list {
+    my @windows = filter_windows(get_current_windows());
+    # Remove transient fields before printing
+    for my $w (@windows) {
+        delete $w->{id};
+        delete $w->{pid};
+        delete $w->{title};
+    }
+    my $json = format_json(\@windows);
+    print $json;
+}
+
+################################################################################
+sub run_save {
+    my @windows = filter_windows(get_current_windows());
+    for my $w (@windows) {
+        delete $w->{id};
+        delete $w->{pid};
+        delete $w->{title};
+    }
+
+    my @all_windows;
+    if ($append && -e $config) {
+        open my $fh, '<', $config or die "Cannot open $config: $!";
+        my $json_text = do { local $/; <$fh> };
+        close $fh;
+        if ($json_text) {
+            my $existing = decode_json($json_text);
+            push @all_windows, @$existing if ref($existing) eq 'ARRAY';
+        }
+    }
+    push @all_windows, @windows;
+
+    open my $fh, '>', $config or die "Cannot write to $config: $!";
+    print $fh format_json(\@all_windows);
+    close $fh;
+    print "Saved layout to $config\n";
+}
+
+################################################################################
+sub spawn_and_wait {
+    my ($cmd) = @_;
+    my $pid = fork();
+    if (!defined $pid) {
+        die "Cannot fork: $!";
+    } elsif ($pid == 0) {
+        # Child
+        exec($cmd) or die "Cannot exec $cmd: $!";
+    }
+
+    # Parent
+    # Wait up to 5 seconds for the window to appear
+    my $max_time = 5.0;
+    my $sleep_int = 0.5;
+    my $waited = 0;
+
+    while ($waited < $max_time) {
+        sleep($sleep_int);
+        $waited += $sleep_int;
+
+        my @descendants = get_descendants($pid);
+        my %pid_family = map { $_ => 1 } ($pid, @descendants);
+
+        my @lines = `wmctrl -plxG`;
+        for my $line (@lines) {
+            if ($line =~ /^(\S+)\s+(-?\d+)\s+(\d+)/) {
+                my ($w_id, $w_desk, $w_pid) = ($1, $2, $3);
+                if ($pid_family{$w_pid}) {
+                    return $w_id;
+                }
+            }
+        }
+    }
+
+    return;
+}
+
+################################################################################
+sub run_restore {
+    if (!-e $config) {
+        die "Config file $config not found\n";
+    }
+
+    open my $fh, '<', $config or die "Cannot open $config: $!";
+    my $json_text = do { local $/; <$fh> };
+    close $fh;
+    my $desired = decode_json($json_text);
+    my @current = get_current_windows();
+
+    # Track available current windows by id
+    my $avail = {};
+    for my $w (@current) {
+        $avail->{$w->{id}} = $w;
+    }
+
+    # Pass 1: exact match (command + desktop + geometry)
+    for my $target (@{$desired}) {
+        for my $id (sort keys %{$avail}) {
+            my $w = $avail->{$id};
+            next if $w->{_match}; # already taken
+            if ($w->{command} eq $target->{command} &&
+                $w->{desktop} == $target->{desktop} &&
+                $w->{x} == $target->{x} &&
+                $w->{y} == $target->{y} &&
+                $w->{width} == $target->{width} &&
+                $w->{height} == $target->{height}) {
+                $target->{_match} = delete $avail->{$id};
+                $target->{_skip} = 1;
+                printf "Direct  matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
+                last;
+            }
+        }
+    }
+
+    # Pass 2: match (command + desktop)
+    for my $target (@{$desired}) {
+        next if $target->{_match};
+        for my $id (sort keys %{$avail}) {
+            my $w = $avail->{$id};
+            next if $w->{_match}; # already taken
+            if ($w->{command} eq $target->{command} &&
+                $w->{desktop} == $target->{desktop}) {
+                $target->{_match} = delete $avail->{$id};
+                printf "Desktop matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
+                last;
+            }
+        }
+    }
+
+    # Pass 3: command only match
+    for my $target (@{$desired}) {
+        next if $target->{_match};
+        for my $id (sort keys %{$avail}) {
+            my $w = $avail->{$id};
+            next if $w->{_match}; # already taken
+            if ($w->{command} eq $target->{command}) {
+                $target->{_match} = delete $avail->{$id};
+                printf "Command matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
+                last;
+            }
+        }
+    }
+
+    # filter after matching windows, we don't want to move windows from other screens/desktops
+    my @target_windows = filter_windows(@{$desired});
+
+    for my $target (@target_windows) {
+        my $cmd   = $target->{command};
+        my $match = $target->{_match};
+        if ($target->{_skip}) {
+            print "Skipping target " . _human_target($target) . " (geometry already matches)\n" if $verbose;
+            next;
+        }
+        if ($match) {
+            # Window found
+            my $id = $match->{id};
+            if ($dry_run || $verbose) {
+                print "Would move existing window\n  -> " . _human_target($match) . " ($id) to target window \n  -> " . _human_target($target) . "\n";
+            }
+            if(!$dry_run) {
+                print "Moving/resizing existing window $id to "._human_target($target)."\n";
+                if ($target->{desktop} == -1) {
+                    system("xdotool set_desktop_for_window $id '-1'");
+                } else {
+                    system("wmctrl -i -r $id -t $target->{desktop}");
+                }
+                system("wmctrl -i -r $id -e 0,$target->{x},$target->{y},$target->{width},$target->{height}");
+            }
+        } else {
+            # Window not found, need to start it
+            if (defined $target->{autostart} && !$target->{autostart}) {
+                print "Skipping '$cmd' (autostart is false)\n" if $verbose || $dry_run;
+                next;
+            }
+            if ($dry_run) {
+                print "Would start '$cmd' and move to " . _human_target($target) . "\n";
+            } else {
+                print "Starting '$cmd'...\n";
+                my $new_id = spawn_and_wait($cmd);
+                if ($new_id) {
+                    print "Found new window $new_id for '$cmd'. Moving/resizing...\n";
+                    if ($target->{desktop} == -1) {
+                        system("xdotool set_desktop_for_window $new_id '-1'");
+                    } else {
+                        system("wmctrl -i -r $new_id -t $target->{desktop}");
+                    }
+                    system("wmctrl -i -r $new_id -e 0,$target->{x},$target->{y},$target->{width},$target->{height}");
+                } else {
+                    warn "Warning: Started '$cmd' but could not find its window within 5 seconds.\n";
+                }
+            }
+        }
+    }
+}
+
+################################################################################
+sub format_json {
+    my ($windows) = @_;
+    my @lines;
+    my $json = JSON::PP->new;
+
+    my @sorted_windows = sort {
+        ($a->{screen} // 0) <=> ($b->{screen} // 0) ||
+        ($a->{desktop} // 0) <=> ($b->{desktop} // 0) ||
+        ($a->{command} // "") cmp ($b->{command} // "") ||
+        ($a->{x} // 0) <=> ($b->{x} // 0) ||
+        ($a->{y} // 0) <=> ($b->{y} // 0)
+    } @$windows;
+
+    for my $w (@sorted_windows) {
+        my $cmd_enc = $json->encode($w->{command} // "");
+        my $s = sprintf('{ "screen": %d, "desktop": %2d, "command": %-15s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
+            $w->{screen} // 0,
+            $w->{desktop} // 0,
+            $cmd_enc . ',',
+            $w->{x} // 0,
+            $w->{y} // 0,
+            $w->{width} // 0,
+            $w->{height} // 0
+        );
+        if (exists $w->{autostart}) {
+            $s .= sprintf(', "autostart": %s', $w->{autostart} ? "1" : "0");
+        }
+        $s .= ' }';
+        push @lines, "  " . $s;
+    }
+    return "[\n" . join(",\n", @lines) . "\n]\n";
+}
+
+################################################################################
+sub _human_target {
+    my($target) = @_;
+    return sprintf("'%s' on desktop %d (screen %d), x:%4d, y:%4d, w:%4d, h:%4d",
+        $target->{command},
+        $target->{desktop},
+        $target->{screen},
+        $target->{x},
+        $target->{y},
+        $target->{width},
+        $target->{height},
+    );
+}
+
+################################################################################
+if ($command eq 'list') {
+    run_list();
+} elsif ($command eq 'save') {
+    run_save();
+} elsif ($command eq 'restore') {
+    run_restore();
+}
