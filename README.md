@@ -1,17 +1,20 @@
 # window-layout
 
 `window-layout` is a Perl command-line tool designed to save, list, and restore
-the geometry, position, and command of your current X11 Linux desktop windows.
-It is built on top of `wmctrl` and `xdotool` to reliably capture and manage
-window states across sessions.
+the geometry, position, and command of your Linux desktop windows.
+
+- On X11 sessions, it uses `wmctrl` and `xdotool`.
+- On KDE Wayland sessions, it uses `kdotool`.
+
+This allows managing window states across sessions on both X11 and KDE Wayland.
 
 ## Dependencies
 
 Before using `window-layout`, ensure you have the following system dependencies installed:
 
 - `perl`
-- `wmctrl` (for interacting with the window manager)
-- `xdotool` (for retrieving screen information)
+- `wmctrl` and `xdotool` (for X11 sessions)
+- `kdotool` (for KDE Wayland sessions)
 
 ## Usage
 
@@ -88,4 +91,3 @@ windows. If a window doesn't exist, it intelligently forks the new process and
 actively traces the process tree to identify the newly created window
 (even if the application forks to the background, like `konsole` or `gnome-terminal`),
 correctly placing it according to your saved geometry.
-

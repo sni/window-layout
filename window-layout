@@ -30,6 +30,8 @@ window-layout [options] <list|save|restore>
 This tool allows you to save the geometry, position, and command of your current X11 windows,
 and restore them later. It uses C<wmctrl> and C<xdotool> under the hood.
 
+On KDE Wayland sessions, it can use C<kdotool> for compatible operations.
+
 =cut
 
 my $append  = 0;
@@ -40,6 +42,7 @@ my $help    = 0;
 my $filter_screen;
 my $filter_desktop;
 my $filter_command;
+my $backend;
 
 Getopt::Long::Configure('no_ignore_case');
 Getopt::Long::Configure('bundling');
@@ -60,6 +63,8 @@ my $command = shift @ARGV;
 if (!$command || $command !~ /^(list|save|restore)$/) {
     pod2usage("Usage: $0 [options] <list|save|restore>\n");
 }
+
+$backend = detect_backend();
 
 ################################################################################
 sub get_command_for_pid {
@@ -93,9 +98,79 @@ sub get_descendants {
 }
 
 ################################################################################
-sub get_current_windows {
+sub has_command {
+    my ($cmd) = @_;
+    return system("command -v $cmd >/dev/null 2>&1") == 0;
+}
+
+################################################################################
+sub detect_backend {
+    my $session_type = lc($ENV{XDG_SESSION_TYPE} // "");
+    my $desktop = lc($ENV{XDG_CURRENT_DESKTOP} // "");
+    my $kde_full_session = $ENV{KDE_FULL_SESSION} // "";
+
+    my $is_kde = ($desktop =~ /kde|plasma/) || ($kde_full_session ne "");
+    if ($session_type eq 'wayland' && $is_kde) {
+        if (has_command('kdotool')) {
+            print "Detected KDE Wayland session, using kdotool backend\n" if $verbose;
+            return 'kde_wayland';
+        }
+        die "Detected KDE Wayland session, but 'kdotool' is not installed. Install kdotool or run in X11.\n";
+    }
+
+    if (has_command('wmctrl') && has_command('xdotool')) {
+        print "Using X11 backend (wmctrl/xdotool)\n" if $verbose;
+        return 'x11';
+    }
+
+    if (has_command('kdotool')) {
+        print "Using kdotool backend\n" if $verbose;
+        return 'kde_wayland';
+    }
+
+    die "No supported backend found. Install wmctrl+xdotool for X11 or kdotool for KDE Wayland.\n";
+}
+
+################################################################################
+sub get_window_screen_x11 {
+    my ($id) = @_;
+    my $screen = 0;
+    my $geom_out = `xdotool getwindowgeometry $id 2>/dev/null`;
+    if (defined $geom_out && $geom_out =~ /screen:\s*(\d+)/) {
+        $screen = $1;
+    }
+    return int($screen);
+}
+
+################################################################################
+sub get_window_geometry_kdotool {
+    my ($id) = @_;
+    my $geom_out = `kdotool getwindowgeometry $id 2>/dev/null`;
+    my %geom;
+    for my $line (split /\n/, $geom_out) {
+        # Newer kdotool output:
+        #   Window {...}
+        #     Position: X,Y
+        #     Geometry: WIDTHxHEIGHT
+        if ($line =~ /^\s*Position:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/i) {
+            $geom{X} = int($1 + ($1 >= 0 ? 0.5 : -0.5));
+            $geom{Y} = int($2 + ($2 >= 0 ? 0.5 : -0.5));
+            next;
+        }
+        if ($line =~ /^\s*Geometry:\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*$/i) {
+            $geom{WIDTH}  = int($1 + 0.5);
+            $geom{HEIGHT} = int($2 + 0.5);
+            next;
+        }
+    }
+
+    return \%geom;
+}
+
+################################################################################
+sub get_current_windows_x11 {
     my @windows;
-    print "Listing existing windows ('wmctrl -plG')\n" if $verbose;
+    print "Listing existing windows ('wmctrl -plxG')\n" if $verbose;
     my @lines = `wmctrl -plxG`;
     for my $line (@lines) {
         chomp $line;
@@ -110,13 +185,6 @@ sub get_current_windows {
             }
             print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
 
-            # Use xdotool to get screen if possible, fallback to 0
-            my $screen = 0;
-            my $geom_out = `xdotool getwindowgeometry $id 2>/dev/null`;
-            if (defined $geom_out && $geom_out =~ /screen:\s*(\d+)/) {
-                $screen = $1;
-            }
-
             push @windows, {
                 id      => $id,
                 desktop => int($desktop),
@@ -125,13 +193,69 @@ sub get_current_windows {
                 y       => int($y),
                 width   => int($w),
                 height  => int($h),
-                screen  => int($screen),
+                screen  => get_window_screen_x11($id),
                 command => $cmd,
                 title   => $title,
             };
         }
     }
     return @windows;
+}
+
+################################################################################
+sub get_current_windows_kde_wayland {
+    my @windows;
+    print "Listing existing windows ('kdotool search')\n" if $verbose;
+    my @ids = `kdotool search 2>/dev/null`;
+    for my $id (@ids) {
+        chomp $id;
+        next if !$id;
+
+        my $desktop = `kdotool get_desktop_for_window $id 2>/dev/null`;
+        chomp $desktop;
+        $desktop = -1 if $desktop !~ /^-?\d+$/;
+
+        my $pid = `kdotool getwindowpid $id 2>/dev/null`;
+        chomp $pid;
+        $pid = 0 if $pid !~ /^\d+$/;
+
+        my $class = `kdotool getwindowclassname $id 2>/dev/null`;
+        chomp $class;
+        my $geom = get_window_geometry_kdotool($id);
+        next if !exists $geom->{WIDTH} || !exists $geom->{HEIGHT};
+
+        my $cmd = get_command_for_pid($pid);
+        if ($cmd eq "unknown" && $class ne "") {
+            $cmd = lc($class);
+        }
+
+        print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
+
+        push @windows, {
+            id      => $id,
+            desktop => int($desktop),
+            pid     => int($pid),
+            x       => int($geom->{X} // 0),
+            y       => int($geom->{Y} // 0),
+            width   => int($geom->{WIDTH}),
+            height  => int($geom->{HEIGHT}),
+            screen  => int($geom->{SCREEN} // 0),
+            command => $cmd,
+            title   => '',
+        };
+    }
+    return @windows;
+}
+
+################################################################################
+sub get_current_windows {
+    if ($backend eq 'x11') {
+        return get_current_windows_x11();
+    }
+    if ($backend eq 'kde_wayland') {
+        return get_current_windows_kde_wayland();
+    }
+    die "Unsupported backend '$backend'\n";
 }
 
 ################################################################################
@@ -208,13 +332,10 @@ sub spawn_and_wait {
         my @descendants = get_descendants($pid);
         my %pid_family = map { $_ => 1 } ($pid, @descendants);
 
-        my @lines = `wmctrl -plxG`;
-        for my $line (@lines) {
-            if ($line =~ /^(\S+)\s+(-?\d+)\s+(\d+)/) {
-                my ($w_id, $w_desk, $w_pid) = ($1, $2, $3);
-                if ($pid_family{$w_pid}) {
-                    return $w_id;
-                }
+        my @current = get_current_windows();
+        for my $w (@current) {
+            if ($pid_family{$w->{pid}}) {
+                return $w->{id};
             }
         }
     }
@@ -306,12 +427,8 @@ sub run_restore {
             }
             if(!$dry_run) {
                 print "Moving/resizing existing window $id to "._human_target($target)."\n";
-                if ($target->{desktop} == -1) {
-                    system("xdotool set_desktop_for_window $id '-1'");
-                } else {
-                    system("wmctrl -i -r $id -t $target->{desktop}");
-                }
-                system("wmctrl -i -r $id -e 0,$target->{x},$target->{y},$target->{width},$target->{height}");
+                set_window_desktop($id, $target->{desktop});
+                move_resize_window($id, $target->{x}, $target->{y}, $target->{width}, $target->{height});
             }
         } else {
             # Window not found, need to start it
@@ -326,17 +443,46 @@ sub run_restore {
                 my $new_id = spawn_and_wait($cmd);
                 if ($new_id) {
                     print "Found new window $new_id for '$cmd'. Moving/resizing...\n";
-                    if ($target->{desktop} == -1) {
-                        system("xdotool set_desktop_for_window $new_id '-1'");
-                    } else {
-                        system("wmctrl -i -r $new_id -t $target->{desktop}");
-                    }
-                    system("wmctrl -i -r $new_id -e 0,$target->{x},$target->{y},$target->{width},$target->{height}");
+                    set_window_desktop($new_id, $target->{desktop});
+                    move_resize_window($new_id, $target->{x}, $target->{y}, $target->{width}, $target->{height});
                 } else {
                     warn "Warning: Started '$cmd' but could not find its window within 5 seconds.\n";
                 }
             }
         }
+    }
+}
+
+################################################################################
+sub set_window_desktop {
+    my ($id, $desktop) = @_;
+    if ($backend eq 'x11') {
+        if ($desktop == -1) {
+            system("xdotool set_desktop_for_window $id '-1'");
+        } else {
+            system("wmctrl -i -r $id -t $desktop");
+        }
+        return;
+    }
+
+    if ($backend eq 'kde_wayland') {
+        system("kdotool set_desktop_for_window $id '$desktop'");
+        return;
+    }
+}
+
+################################################################################
+sub move_resize_window {
+    my ($id, $x, $y, $width, $height) = @_;
+    if ($backend eq 'x11') {
+        system("wmctrl -i -r $id -e 0,$x,$y,$width,$height");
+        return;
+    }
+
+    if ($backend eq 'kde_wayland') {
+        system("kdotool windowmove $id $x $y");
+        system("kdotool windowsize $id $width $height");
+        return;
     }
 }
 
@@ -356,7 +502,7 @@ sub format_json {
 
     for my $w (@sorted_windows) {
         my $cmd_enc = $json->encode($w->{command} // "");
-        my $s = sprintf('{ "screen": %d, "desktop": %2d, "command": %-15s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
+        my $s = sprintf('{ "screen": %d, "desktop": %2d, "command": %-20s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
             $w->{screen} // 0,
             $w->{desktop} // 0,
             $cmd_enc . ',',
