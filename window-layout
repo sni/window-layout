@@ -82,6 +82,32 @@ sub get_command_for_pid {
 }
 
 ################################################################################
+sub get_cmdline_for_pid {
+    my ($pid) = @_;
+    return "" unless $pid && $pid > 0;
+    if (open my $fh, '<', "/proc/$pid/cmdline") {
+        my $cmdline = do { local $/; <$fh> };
+        close $fh;
+        if (defined $cmdline) {
+            $cmdline =~ s/\0/ /g;
+            $cmdline =~ s/\s+$//;
+            return $cmdline;
+        }
+    }
+    return "";
+}
+
+################################################################################
+sub match_command {
+    my ($w, $target) = @_;
+    if (defined $target->{search}) {
+        my $regex = $target->{search};
+        return (defined $w->{cmdline} && $w->{cmdline} =~ /$regex/);
+    }
+    return (defined $w->{command} && defined $target->{command} && $w->{command} eq $target->{command});
+}
+
+################################################################################
 sub get_descendants {
     my ($pid) = @_;
     my @descendants;
@@ -195,6 +221,7 @@ sub get_current_windows_x11 {
                 height  => int($h),
                 screen  => get_window_screen_x11($id),
                 command => $cmd,
+                cmdline => get_cmdline_for_pid($pid),
                 title   => $title,
             };
         }
@@ -241,6 +268,7 @@ sub get_current_windows_kde_wayland {
             height  => int($geom->{HEIGHT}),
             screen  => int($geom->{SCREEN} // 0),
             command => $cmd,
+            cmdline => get_cmdline_for_pid($pid),
             title   => '',
         };
     }
@@ -264,7 +292,7 @@ sub filter_windows {
     return grep {
         (!defined $filter_screen  || $_->{screen}  == $filter_screen) &&
         (!defined $filter_desktop || $_->{desktop} == $filter_desktop) &&
-        (!defined $filter_command || $_->{command} eq $filter_command)
+        (!defined $filter_command || (defined $_->{command} && index($_->{command}, $filter_command) != -1))
     } @windows;
 }
 
@@ -276,6 +304,7 @@ sub run_list {
         delete $w->{id};
         delete $w->{pid};
         delete $w->{title};
+        delete $w->{cmdline};
     }
     my $json = format_json(\@windows);
     print $json;
@@ -288,6 +317,7 @@ sub run_save {
         delete $w->{id};
         delete $w->{pid};
         delete $w->{title};
+        delete $w->{cmdline};
     }
 
     my @all_windows;
@@ -366,7 +396,7 @@ sub run_restore {
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
-            if ($w->{command} eq $target->{command} &&
+            if (match_command($w, $target) &&
                 $w->{desktop} == $target->{desktop} &&
                 $w->{x} == $target->{x} &&
                 $w->{y} == $target->{y} &&
@@ -386,7 +416,7 @@ sub run_restore {
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
-            if ($w->{command} eq $target->{command} &&
+            if (match_command($w, $target) &&
                 $w->{desktop} == $target->{desktop}) {
                 $target->{_match} = delete $avail->{$id};
                 printf "Desktop matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
@@ -401,7 +431,7 @@ sub run_restore {
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
-            if ($w->{command} eq $target->{command}) {
+            if (match_command($w, $target)) {
                 $target->{_match} = delete $avail->{$id};
                 printf "Command matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
                 last;
@@ -511,6 +541,10 @@ sub format_json {
             $w->{width} // 0,
             $w->{height} // 0
         );
+        if (exists $w->{search}) {
+            my $matcher_enc = $json->encode($w->{search});
+            $s .= sprintf(', "search": %s', $matcher_enc);
+        }
         if (exists $w->{autostart}) {
             $s .= sprintf(', "autostart": %s', $w->{autostart} ? "1" : "0");
         }
@@ -523,8 +557,9 @@ sub format_json {
 ################################################################################
 sub _human_target {
     my($target) = @_;
+    my $name = defined $target->{search} ? "search(" . $target->{search} . ")" : $target->{command};
     return sprintf("'%s' on desktop %d (screen %d), x:%4d, y:%4d, w:%4d, h:%4d",
-        $target->{command},
+        $name,
         $target->{desktop},
         $target->{screen},
         $target->{x},

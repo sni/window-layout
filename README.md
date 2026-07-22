@@ -76,6 +76,7 @@ Example configuration:
 | Attribute   | Description |
 | ----------- | ----------- |
 | `command`   | The command or executable name associated with the window. |
+| `search`    | (Optional) A regular expression to match against the full command line of the window's PID. If set, this is used instead of `command` to find the existing window. |
 | `desktop`   | The desktop number the window is on (0-indexed). `-1` indicates the window is on all desktops (sticky). |
 | `screen`    | The monitor/screen ID the window is located on. |
 | `width`     | The width of the window in pixels. |
