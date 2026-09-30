@@ -98,6 +98,28 @@ sub get_cmdline_for_pid {
 }
 
 ################################################################################
+sub is_desktop_all {
+    my ($desktop) = @_;
+    return (defined $desktop && !ref($desktop) && $desktop eq 'all');
+}
+
+################################################################################
+sub is_desktop_any {
+    my ($desktop) = @_;
+    return (defined $desktop && !ref($desktop) && $desktop eq 'any');
+}
+
+################################################################################
+# Compares an actual window's (numeric) desktop against a target's desktop,
+# which may be a desktop number, "all" (sticky/all desktops), or "any" (don't care).
+sub desktop_matches {
+    my ($window_desktop, $target_desktop) = @_;
+    return 1 if is_desktop_any($target_desktop);
+    return $window_desktop == -1 if is_desktop_all($target_desktop);
+    return $window_desktop == $target_desktop;
+}
+
+################################################################################
 sub match_command {
     my ($w, $target) = @_;
     if (defined $target->{search}) {
@@ -291,7 +313,7 @@ sub filter_windows {
     my (@windows) = @_;
     return grep {
         (!defined $filter_screen  || $_->{screen}  == $filter_screen) &&
-        (!defined $filter_desktop || $_->{desktop} == $filter_desktop) &&
+        (!defined $filter_desktop || (!ref($_->{desktop}) && $_->{desktop} !~ /^(all|any)$/ && $_->{desktop} == $filter_desktop)) &&
         (!defined $filter_command || (defined $_->{command} && index($_->{command}, $filter_command) != -1))
     } @windows;
 }
@@ -397,7 +419,7 @@ sub run_restore {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
             if (match_command($w, $target) &&
-                $w->{desktop} == $target->{desktop} &&
+                desktop_matches($w->{desktop}, $target->{desktop}) &&
                 $w->{x} == $target->{x} &&
                 $w->{y} == $target->{y} &&
                 $w->{width} == $target->{width} &&
@@ -417,7 +439,7 @@ sub run_restore {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
             if (match_command($w, $target) &&
-                $w->{desktop} == $target->{desktop}) {
+                desktop_matches($w->{desktop}, $target->{desktop})) {
                 $target->{_match} = delete $avail->{$id};
                 printf "Desktop matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
                 last;
@@ -486,8 +508,11 @@ sub run_restore {
 ################################################################################
 sub set_window_desktop {
     my ($id, $desktop) = @_;
+    # "any" means leave the window on whatever desktop it currently occupies
+    return if is_desktop_any($desktop);
+
     if ($backend eq 'x11') {
-        if ($desktop == -1) {
+        if (is_desktop_all($desktop)) {
             system("xdotool set_desktop_for_window $id '-1'");
         } else {
             system("wmctrl -i -r $id -t $desktop");
@@ -496,7 +521,8 @@ sub set_window_desktop {
     }
 
     if ($backend eq 'kde_wayland') {
-        system("kdotool set_desktop_for_window $id '$desktop'");
+        my $target_desktop = is_desktop_all($desktop) ? -1 : $desktop;
+        system("kdotool set_desktop_for_window $id '$target_desktop'");
         return;
     }
 }
@@ -532,9 +558,11 @@ sub format_json {
 
     for my $w (@sorted_windows) {
         my $cmd_enc = $json->encode($w->{command} // "");
-        my $s = sprintf('{ "screen": %d, "desktop": %2d, "command": %-20s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
+        my $desktop_val = $w->{desktop} // 0;
+        my $desktop_field = ($desktop_val eq '-1') ? '"all"' : sprintf('%2d', $desktop_val);
+        my $s = sprintf('{ "screen": %d, "desktop": %s, "command": %-20s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
             $w->{screen} // 0,
-            $w->{desktop} // 0,
+            $desktop_field,
             $cmd_enc . ',',
             $w->{x} // 0,
             $w->{y} // 0,
@@ -558,7 +586,7 @@ sub format_json {
 sub _human_target {
     my($target) = @_;
     my $name = defined $target->{search} ? "search(" . $target->{search} . ")" : $target->{command};
-    return sprintf("'%s' on desktop %d (screen %d), x:%4d, y:%4d, w:%4d, h:%4d",
+    return sprintf("'%s' on desktop %s (screen %d), x:%4d, y:%4d, w:%4d, h:%4d",
         $name,
         $target->{desktop},
         $target->{screen},

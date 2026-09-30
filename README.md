@@ -67,6 +67,15 @@ Example configuration:
     "width":     1920,
     "height":    1043,
     "autostart": 0
+  },
+  {
+    "screen":    0,
+    "desktop":  "any",
+    "command":  "remmina",
+    "x":         0,
+    "y":         0,
+    "width":     800,
+    "height":    600
   }
 ]
 ```
@@ -77,7 +86,7 @@ Example configuration:
 | ----------- | ----------- |
 | `command`   | The command or executable name associated with the window. |
 | `search`    | (Optional) A regular expression to match against the full command line of the window's PID. If set, this is used instead of `command` to find the existing window. |
-| `desktop`   | The desktop number the window is on (0-indexed). `-1` indicates the window is on all desktops (sticky). |
+| `desktop`   | The desktop number the window is on (0-indexed). Instead of a number, this can also be `"all"` (the window is sticky/shown on all desktops) or `"any"` (the window's desktop is left untouched; the layout is applied on whatever desktop the window currently occupies). |
 | `screen`    | The monitor/screen ID the window is located on. |
 | `width`     | The width of the window in pixels. |
 | `height`    | The height of the window in pixels. |
