@@ -133,7 +133,7 @@ sub match_command {
 sub get_descendants {
     my ($pid) = @_;
     my @descendants;
-    my @lines = `ps --ppid $pid -o pid= 2>/dev/null`;
+    my @lines = run_capture("ps --ppid $pid -o pid= 2>/dev/null");
     for my $line (@lines) {
         chomp $line;
         $line =~ s/^\s+|\s+$//g;
@@ -148,7 +148,21 @@ sub get_descendants {
 ################################################################################
 sub has_command {
     my ($cmd) = @_;
-    return system("command -v $cmd >/dev/null 2>&1") == 0;
+    return run_system("command -v $cmd >/dev/null 2>&1") == 0;
+}
+
+################################################################################
+sub run_capture {
+    my ($cmd) = @_;
+    print "Running: $cmd\n" if $verbose;
+    return `$cmd`;
+}
+
+################################################################################
+sub run_system {
+    my ($cmd) = @_;
+    print "Running: $cmd\n" if $verbose;
+    return system($cmd);
 }
 
 ################################################################################
@@ -183,7 +197,7 @@ sub detect_backend {
 sub get_window_screen_x11 {
     my ($id) = @_;
     my $screen = 0;
-    my $geom_out = `xdotool getwindowgeometry $id 2>/dev/null`;
+    my $geom_out = run_capture("xdotool getwindowgeometry $id 2>/dev/null");
     if (defined $geom_out && $geom_out =~ /screen:\s*(\d+)/) {
         $screen = $1;
     }
@@ -193,7 +207,7 @@ sub get_window_screen_x11 {
 ################################################################################
 sub get_window_geometry_kdotool {
     my ($id) = @_;
-    my $geom_out = `kdotool getwindowgeometry $id 2>/dev/null`;
+    my $geom_out = run_capture("kdotool getwindowgeometry $id 2>/dev/null");
     my %geom;
     for my $line (split /\n/, $geom_out) {
         # Newer kdotool output:
@@ -219,7 +233,7 @@ sub get_window_geometry_kdotool {
 sub get_current_windows_x11 {
     my @windows;
     print "Listing existing windows ('wmctrl -plxG')\n" if $verbose;
-    my @lines = `wmctrl -plxG`;
+    my @lines = run_capture('wmctrl -plxG');
     for my $line (@lines) {
         chomp $line;
         # format: ID Desktop PID X Y W H Class Hostname Title
@@ -255,20 +269,20 @@ sub get_current_windows_x11 {
 sub get_current_windows_kde_wayland {
     my @windows;
     print "Listing existing windows ('kdotool search')\n" if $verbose;
-    my @ids = `kdotool search 2>/dev/null`;
+    my @ids = run_capture('kdotool search 2>/dev/null');
     for my $id (@ids) {
         chomp $id;
         next if !$id;
 
-        my $desktop = `kdotool get_desktop_for_window $id 2>/dev/null`;
+        my $desktop = run_capture("kdotool get_desktop_for_window $id 2>/dev/null");
         chomp $desktop;
         $desktop = -1 if $desktop !~ /^-?\d+$/;
 
-        my $pid = `kdotool getwindowpid $id 2>/dev/null`;
+        my $pid = run_capture("kdotool getwindowpid $id 2>/dev/null");
         chomp $pid;
         $pid = 0 if $pid !~ /^\d+$/;
 
-        my $class = `kdotool getwindowclassname $id 2>/dev/null`;
+        my $class = run_capture("kdotool getwindowclassname $id 2>/dev/null");
         chomp $class;
         my $geom = get_window_geometry_kdotool($id);
         next if !exists $geom->{WIDTH} || !exists $geom->{HEIGHT};
@@ -368,6 +382,7 @@ sub spawn_and_wait {
         die "Cannot fork: $!";
     } elsif ($pid == 0) {
         # Child
+        print "Running: $cmd\n" if $verbose;
         exec($cmd) or die "Cannot exec $cmd: $!";
     }
 
@@ -513,16 +528,16 @@ sub set_window_desktop {
 
     if ($backend eq 'x11') {
         if (is_desktop_all($desktop)) {
-            system("xdotool set_desktop_for_window $id '-1'");
+            run_system("xdotool set_desktop_for_window $id '-1'");
         } else {
-            system("wmctrl -i -r $id -t $desktop");
+            run_system("wmctrl -i -r $id -t $desktop");
         }
         return;
     }
 
     if ($backend eq 'kde_wayland') {
         my $target_desktop = is_desktop_all($desktop) ? -1 : $desktop;
-        system("kdotool set_desktop_for_window $id '$target_desktop'");
+        run_system("kdotool set_desktop_for_window $id '$target_desktop'");
         return;
     }
 }
@@ -533,17 +548,17 @@ sub move_resize_window {
     if ($backend eq 'x11') {
         $width = -1 unless defined $width;
         $height = -1 unless defined $height;
-        system("wmctrl -i -r $id -e 0,$x,$y,$width,$height");
+        run_system("wmctrl -i -r $id -e 0,$x,$y,$width,$height");
         return;
     }
 
     if ($backend eq 'kde_wayland') {
-        system("kdotool windowmove $id $x $y");
+        run_system("kdotool windowmove $id $x $y");
         if (defined $width || defined $height) {
             my $geom = get_window_geometry_kdotool($id);
             $width = $geom->{WIDTH} unless defined $width;
             $height = $geom->{HEIGHT} unless defined $height;
-            system("kdotool windowsize $id $width $height") if defined $width && defined $height;
+            run_system("kdotool windowsize $id $width $height") if defined $width && defined $height;
         }
         return;
     }
