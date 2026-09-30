@@ -88,8 +88,8 @@ Example configuration:
 | `search`    | (Optional) A regular expression to match against the full command line of the window's PID. If set, this is used instead of `command` to find the existing window. |
 | `desktop`   | The desktop number the window is on (0-indexed). Instead of a number, this can also be `"all"` (the window is sticky/shown on all desktops) or `"any"` (the window's desktop is left untouched; the layout is applied on whatever desktop the window currently occupies). |
 | `screen`    | The monitor/screen ID the window is located on. |
-| `width`     | The width of the window in pixels. |
-| `height`    | The height of the window in pixels. |
+| `width`     | (Optional) The width of the window in pixels. If omitted, the current width is kept. |
+| `height`    | (Optional) The height of the window in pixels. If omitted, the current height is kept. |
 | `x`         | The horizontal X coordinate of the window position. |
 | `y`         | The vertical Y coordinate of the window position. |
 | `autostart` | (Optional) Boolean indicating whether to start the command if the window is missing. Defaults to `true`. Set to `false` to skip starting the process automatically. |

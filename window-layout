@@ -422,8 +422,8 @@ sub run_restore {
                 desktop_matches($w->{desktop}, $target->{desktop}) &&
                 $w->{x} == $target->{x} &&
                 $w->{y} == $target->{y} &&
-                $w->{width} == $target->{width} &&
-                $w->{height} == $target->{height}) {
+                (!defined $target->{width} || $w->{width} == $target->{width}) &&
+                (!defined $target->{height} || $w->{height} == $target->{height})) {
                 $target->{_match} = delete $avail->{$id};
                 $target->{_skip} = 1;
                 printf "Direct  matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
@@ -531,13 +531,20 @@ sub set_window_desktop {
 sub move_resize_window {
     my ($id, $x, $y, $width, $height) = @_;
     if ($backend eq 'x11') {
+        $width = -1 unless defined $width;
+        $height = -1 unless defined $height;
         system("wmctrl -i -r $id -e 0,$x,$y,$width,$height");
         return;
     }
 
     if ($backend eq 'kde_wayland') {
         system("kdotool windowmove $id $x $y");
-        system("kdotool windowsize $id $width $height");
+        if (defined $width || defined $height) {
+            my $geom = get_window_geometry_kdotool($id);
+            $width = $geom->{WIDTH} unless defined $width;
+            $height = $geom->{HEIGHT} unless defined $height;
+            system("kdotool windowsize $id $width $height") if defined $width && defined $height;
+        }
         return;
     }
 }
@@ -585,15 +592,17 @@ sub format_json {
 ################################################################################
 sub _human_target {
     my($target) = @_;
-    my $name = defined $target->{search} ? "search(" . $target->{search} . ")" : $target->{command};
-    return sprintf("'%s' on desktop %s (screen %d), x:%4d, y:%4d, w:%4d, h:%4d",
+    my $name   = defined $target->{search} ? "search(" . $target->{search} . ")" : $target->{command};
+    my $width  = defined $target->{width} ? sprintf('%4d', $target->{width}) : 'keep';
+    my $height = defined $target->{height} ? sprintf('%4d', $target->{height}) : 'keep';
+    return sprintf("'%s' on desktop %3s (screen %d), x:%4d, y:%4d, w:%s, h:%s",
         $name,
         $target->{desktop},
         $target->{screen},
         $target->{x},
         $target->{y},
-        $target->{width},
-        $target->{height},
+        $width,
+        $height,
     );
 }
 
