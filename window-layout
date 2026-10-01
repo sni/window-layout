@@ -120,6 +120,14 @@ sub desktop_matches {
 }
 
 ################################################################################
+sub same_geometry {
+    my ($w, $target) = @_;
+    return ($w->{x} == $target->{x} && $w->{y} == $target->{y}) ||
+        (defined $w->{wmctrl_x} && defined $w->{wmctrl_y} &&
+         $w->{wmctrl_x} == $target->{x} && $w->{wmctrl_y} == $target->{y});
+}
+
+################################################################################
 sub match_command {
     my ($w, $target) = @_;
     if (defined $target->{search}) {
@@ -447,16 +455,13 @@ sub run_restore {
 
     # Pass 1: exact match (command + desktop + geometry)
     for my $target (@{$desired}) {
+        next if is_desktop_any($target->{desktop}); # handled separately below, matches all windows
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
-            my $same_geometry =
-                ($w->{x} == $target->{x} && $w->{y} == $target->{y}) ||
-                (defined $w->{wmctrl_x} && defined $w->{wmctrl_y} &&
-                 $w->{wmctrl_x} == $target->{x} && $w->{wmctrl_y} == $target->{y});
             if (match_command($w, $target) &&
                 desktop_matches($w->{desktop}, $target->{desktop}) &&
-                $same_geometry &&
+                same_geometry($w, $target) &&
                 (!defined $target->{width} || $w->{width} == $target->{width}) &&
                 (!defined $target->{height} || $w->{height} == $target->{height})) {
                 $target->{_match} = delete $avail->{$id};
@@ -470,6 +475,7 @@ sub run_restore {
     # Pass 2: match (command + desktop)
     for my $target (@{$desired}) {
         next if $target->{_match};
+        next if is_desktop_any($target->{desktop}); # handled separately below, matches all windows
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
@@ -485,6 +491,7 @@ sub run_restore {
     # Pass 3: command only match
     for my $target (@{$desired}) {
         next if $target->{_match};
+        next if is_desktop_any($target->{desktop}); # handled separately below, matches all windows
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
@@ -496,11 +503,54 @@ sub run_restore {
         }
     }
 
+    # Pass 4: targets with desktop "any" don't care which desktop a window is on,
+    # so every remaining window matching the command should be moved, not just the first one
+    for my $target (@{$desired}) {
+        next unless is_desktop_any($target->{desktop});
+        my @matches;
+        for my $id (sort keys %{$avail}) {
+            my $w = $avail->{$id};
+            next if $w->{_match}; # already taken
+            if (match_command($w, $target)) {
+                push @matches, delete $avail->{$id};
+                printf "Any     matched target %s to existing window '%s'\n", _human_target($target), $id if $verbose;
+            }
+        }
+        $target->{_matches} = \@matches;
+    }
+
     # filter after matching windows, we don't want to move windows from other screens/desktops
     my @target_windows = filter_windows(@{$desired});
 
     for my $target (@target_windows) {
         my $cmd   = $target->{command};
+
+        if (is_desktop_any($target->{desktop})) {
+            my @matches = @{$target->{_matches} // []};
+            if (!@matches) {
+                # fall through to the autostart/spawn logic below
+            } else {
+                for my $match (@matches) {
+                    my $id = $match->{id};
+                    if (same_geometry($match, $target) &&
+                        (!defined $target->{width} || $match->{width} == $target->{width}) &&
+                        (!defined $target->{height} || $match->{height} == $target->{height})) {
+                        print "Skipping existing window $id for " . _human_target($target) . " (geometry already matches)\n" if $verbose;
+                        next;
+                    }
+                    if ($dry_run || $verbose) {
+                        print "Would move existing window\n  -> " . _human_target($match) . " ($id) to target window \n  -> " . _human_target($target) . "\n";
+                    }
+                    if (!$dry_run) {
+                        print "Moving/resizing existing window $id to "._human_target($target)."\n";
+                        set_window_desktop($id, $target->{desktop});
+                        move_resize_window($id, $target->{x}, $target->{y}, $target->{width}, $target->{height});
+                    }
+                }
+                next;
+            }
+        }
+
         my $match = $target->{_match};
         if ($target->{_skip}) {
             print "Skipping target " . _human_target($target) . " (geometry already matches)\n" if $verbose;
