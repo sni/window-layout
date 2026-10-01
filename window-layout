@@ -19,7 +19,7 @@ window-layout [options] <list|save|restore>
    --append           Append to the layout when saving instead of overwriting
    --dry-run          Simulate the restore process without actually moving windows
    --screen ID        Filter by screen ID (for multiple monitors)
-   --desktop ID       Filter by desktop ID
+    --desktop ID       Filter by desktop number (starting at 1)
    --filter CMD       Filter by command name
    --config FILE      Specify an alternative JSON config file (default: ~/.window-layout.json)
    -v, --verbose      Print debug output
@@ -58,6 +58,8 @@ Getopt::Long::GetOptions (
 ) or pod2usage("Error in command line arguments\n");
 
 pod2usage(1) if $help;
+
+$filter_desktop = desktop_to_internal($filter_desktop) if defined $filter_desktop;
 
 my $command = shift @ARGV;
 if (!$command || $command !~ /^(list|save|restore)$/) {
@@ -107,6 +109,32 @@ sub is_desktop_all {
 sub is_desktop_any {
     my ($desktop) = @_;
     return (defined $desktop && !ref($desktop) && $desktop eq 'any');
+}
+
+################################################################################
+sub desktop_to_internal {
+    my ($desktop) = @_;
+    return $desktop if is_desktop_all($desktop) || is_desktop_any($desktop);
+    die "Desktop numbers start at 1\n"
+        unless defined $desktop && !ref($desktop) && $desktop =~ /^\d+$/ && $desktop >= 1;
+    return int($desktop) - 1;
+}
+
+################################################################################
+sub desktop_label {
+    my ($desktop) = @_;
+    return 'all' if is_desktop_all($desktop);
+    return 'any' if is_desktop_any($desktop);
+    return $desktop + 1;
+}
+
+################################################################################
+sub normalize_config_desktops {
+    my ($windows) = @_;
+    for my $window (@$windows) {
+        $window->{desktop} = desktop_to_internal($window->{desktop})
+            if exists $window->{desktop};
+    }
 }
 
 ################################################################################
@@ -264,7 +292,7 @@ sub get_current_windows_x11 {
                 $cmd = lc($1);
             }
             my ($frame_left, $frame_top) = get_window_frame_extents_x11($id);
-            print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
+            print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop " . desktop_label($desktop) . "\n" if $verbose;
 
             push @windows, {
                 id      => $id,
@@ -313,7 +341,7 @@ sub get_current_windows_kde_wayland {
             $cmd = lc($class);
         }
 
-        print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
+        print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop " . desktop_label($desktop) . "\n" if $verbose;
 
         push @windows, {
             id      => $id,
@@ -388,7 +416,10 @@ sub run_save {
         close $fh;
         if ($json_text) {
             my $existing = decode_json($json_text);
-            push @all_windows, @$existing if ref($existing) eq 'ARRAY';
+            if (ref($existing) eq 'ARRAY') {
+                normalize_config_desktops($existing);
+                push @all_windows, @$existing;
+            }
         }
     }
     push @all_windows, @windows;
@@ -445,6 +476,7 @@ sub run_restore {
     my $json_text = do { local $/; <$fh> };
     close $fh;
     my $desired = decode_json($json_text);
+    normalize_config_desktops($desired);
     my @current = get_current_windows();
 
     # Track available current windows by id
@@ -651,7 +683,9 @@ sub format_json {
     for my $w (@sorted_windows) {
         my $cmd_enc = $json->encode($w->{command} // "");
         my $desktop_val = $w->{desktop} // 0;
-        my $desktop_field = ($desktop_val eq '-1') ? '"all"' : sprintf('%2d', $desktop_val);
+        my $desktop_field = is_desktop_all($desktop_val) ? '"all"'
+            : is_desktop_any($desktop_val) ? '"any"'
+            : sprintf('%2d', desktop_label($desktop_val));
         my $s = sprintf('{ "screen": %d, "desktop": %s, "command": %-20s "x": %4d, "y": %4d, "width": %4d, "height": %4d',
             $w->{screen} // 0,
             $desktop_field,
@@ -682,7 +716,7 @@ sub _human_target {
     my $height = defined $target->{height} ? sprintf('%4d', $target->{height}) : 'keep';
     return sprintf("'%s' on desktop %3s (screen %d), x:%4d, y:%4d, w:%s, h:%s",
         $name,
-        $target->{desktop},
+        desktop_label($target->{desktop}),
         $target->{screen},
         $target->{x},
         $target->{y},

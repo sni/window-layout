@@ -35,7 +35,7 @@ window-layout [options] <list|save|restore>
 | `--append`        | Append to the layout when saving instead of overwriting.                    |
 | `-n`, `--dry-run` | Simulate the restore process without actually moving windows.               |
 | `--screen ID`     | Filter operations by screen ID. (for multiple monitors)                     |
-| `--desktop ID`    | Filter operations by desktop ID.                                            |
+| `--desktop ID`    | Filter operations by desktop number (starting at 1).                        |
 | `--filter CMD`    | Filter operations by command name (e.g., `konsole`).                        |
 | `--config FILE`   | Specify an alternative JSON config file. (Default: `~/.window-layout.json`) |
 | `-v`, `--verbose` | Print debug output during execution.                                        |
@@ -51,7 +51,7 @@ Example configuration:
 [
   {
     "screen":    0,
-    "desktop":   0,
+    "desktop":   1,
     "command":  "konsole",
     "x":         2,
     "y":         28,
@@ -60,7 +60,7 @@ Example configuration:
   },
   {
     "screen":    0,
-    "desktop":   1,
+    "desktop":   2,
     "command":  "firefox",
     "x":         0,
     "y":         0,
@@ -86,7 +86,7 @@ Example configuration:
 | ----------- | ----------- |
 | `command`   | The command or executable name associated with the window. |
 | `search`    | (Optional) A regular expression to match against the full command line of the window's PID. If set, this is used instead of `command` to find the existing window. |
-| `desktop`   | The desktop number the window is on (0-indexed). Instead of a number, this can also be `"all"` (the window is sticky/shown on all desktops) or `"any"` (the window's desktop is left untouched; the layout is applied on whatever desktop the window currently occupies). |
+| `desktop`   | Desktop number (starts at 1), `"all"` (sticky), or `"any"` (leave the desktop unchanged). |
 | `screen`    | The monitor/screen ID the window is located on. |
 | `width`     | (Optional) The width of the window in pixels. If omitted, the current width is kept. |
 | `height`    | (Optional) The height of the window in pixels. If omitted, the current height is kept. |
