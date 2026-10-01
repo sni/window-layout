@@ -205,6 +205,16 @@ sub get_window_screen_x11 {
 }
 
 ################################################################################
+sub get_window_frame_extents_x11 {
+    my ($id) = @_;
+    my $frame_out = run_capture("xprop -id $id _NET_FRAME_EXTENTS 2>/dev/null");
+    if (defined $frame_out && $frame_out =~ /_NET_FRAME_EXTENTS.*?=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)/) {
+        return (int($1), int($3));
+    }
+    return (0, 0);
+}
+
+################################################################################
 sub get_window_geometry_kdotool {
     my ($id) = @_;
     my $geom_out = run_capture("kdotool getwindowgeometry $id 2>/dev/null");
@@ -245,14 +255,17 @@ sub get_current_windows_x11 {
             if ($cmd eq "unknown" && $class =~ /^([^\.]+)/) {
                 $cmd = lc($1);
             }
+            my ($frame_left, $frame_top) = get_window_frame_extents_x11($id);
             print "  - found window $id (PID: $pid, Command: $cmd, Class: $class) on desktop $desktop\n" if $verbose;
 
             push @windows, {
                 id      => $id,
                 desktop => int($desktop),
                 pid     => int($pid),
-                x       => int($x),
-                y       => int($y),
+                wmctrl_x => int($x),
+                wmctrl_y => int($y),
+                x       => int($x) - $frame_left,
+                y       => int($y) - $frame_top,
                 width   => int($w),
                 height  => int($h),
                 screen  => get_window_screen_x11($id),
@@ -341,6 +354,8 @@ sub run_list {
         delete $w->{pid};
         delete $w->{title};
         delete $w->{cmdline};
+        delete $w->{wmctrl_x};
+        delete $w->{wmctrl_y};
     }
     my $json = format_json(\@windows);
     print $json;
@@ -354,6 +369,8 @@ sub run_save {
         delete $w->{pid};
         delete $w->{title};
         delete $w->{cmdline};
+        delete $w->{wmctrl_x};
+        delete $w->{wmctrl_y};
     }
 
     my @all_windows;
@@ -433,10 +450,13 @@ sub run_restore {
         for my $id (sort keys %{$avail}) {
             my $w = $avail->{$id};
             next if $w->{_match}; # already taken
+            my $same_geometry =
+                ($w->{x} == $target->{x} && $w->{y} == $target->{y}) ||
+                (defined $w->{wmctrl_x} && defined $w->{wmctrl_y} &&
+                 $w->{wmctrl_x} == $target->{x} && $w->{wmctrl_y} == $target->{y});
             if (match_command($w, $target) &&
                 desktop_matches($w->{desktop}, $target->{desktop}) &&
-                $w->{x} == $target->{x} &&
-                $w->{y} == $target->{y} &&
+                $same_geometry &&
                 (!defined $target->{width} || $w->{width} == $target->{width}) &&
                 (!defined $target->{height} || $w->{height} == $target->{height})) {
                 $target->{_match} = delete $avail->{$id};

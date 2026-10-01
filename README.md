@@ -13,7 +13,7 @@ This allows managing window states across sessions on both X11 and KDE Wayland.
 Before using `window-layout`, ensure you have the following system dependencies installed:
 
 - `perl`
-- `wmctrl` and `xdotool` (for X11 sessions)
+- `wmctrl`, `xdotool`, and `xprop` (for X11 sessions)
 - `kdotool` (for KDE Wayland sessions)
 
 ## Usage
